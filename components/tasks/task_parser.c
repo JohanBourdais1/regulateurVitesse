@@ -137,7 +137,8 @@ void task_parser(void *pv)
                 process_frame(payload_type, payload_buf,
                               (uint8_t)(expected_len - 1));
                 // Reset watchdog Failsafe
-                xTaskNotify(task_failsafe_handle, 0, eNoAction);
+                xTaskNotify(task_failsafe_handle,
+                            FAILSAFE_WATCHDOG_BIT, eSetBits);
             } else {
                 ecu_stats.rx_crc_err++;
                 ESP_LOGW(TAG, "CRC err: got 0x%02X expected 0x%02X",

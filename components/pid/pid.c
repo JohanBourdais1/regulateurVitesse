@@ -32,8 +32,7 @@ float pid_compute(pid_t *pid, float setpoint, float measured)
     // Saturation + anti-windup conditionnel
     if (output > pid->out_max) {
         output = pid->out_max;
-        // Anti-windup : on n'accumule pas si l'erreur pousse dans
-        // le même sens que la saturation
+        // Anti-windup : on n'accumule pas si l'erreur pousse dansle même sens que la saturation
         if (err > 0.0f)
             integral_candidate = pid->integral;
     } else if (output < pid->out_min) {

@@ -19,7 +19,6 @@ QueueHandle_t     q_output;
 QueueHandle_t     q_tx;
 SemaphoreHandle_t mutex_vars;
 SemaphoreHandle_t mutex_uart_tx;
-SemaphoreHandle_t sem_gpio;
 TaskHandle_t      task_failsafe_handle;
 TaskHandle_t      task_uart_rx_handle;
 ecu_state_t       ecu_state;
@@ -66,14 +65,12 @@ static void ipc_init(void)
     q_tx          = xQueueCreate(10,  sizeof(ecu_frame_t));
     mutex_vars    = xSemaphoreCreateMutex();
     mutex_uart_tx = xSemaphoreCreateMutex();
-    sem_gpio      = xSemaphoreCreateBinary();
 
     configASSERT(q_bytes);
     configASSERT(q_output);
     configASSERT(q_tx);
     configASSERT(mutex_vars);
     configASSERT(mutex_uart_tx);
-    configASSERT(sem_gpio);
 
     ESP_LOGI(TAG, "Primitives IPC créées");
 }

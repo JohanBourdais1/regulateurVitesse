@@ -13,39 +13,43 @@ static void trigger_failsafe(const char *reason)
 {
     ESP_LOGE(TAG, "FAILSAFE déclenché : %s", reason);
 
-    // 1. Forcer mode OFF et output 0
     xSemaphoreTake(mutex_vars, portMAX_DELAY);
     ecu_state.mode   = MODE_OFF;
     ecu_state.output = 0.0f;
     xSemaphoreGive(mutex_vars);
 
-    // 2. Vider la queue output pour que TX n'envoie plus rien
     float dummy;
     while (xQueueReceive(q_output, &dummy, 0) == pdTRUE) {}
+    float zero = 0.0f;
+    xQueueSend(q_output, &zero, 0);
 
-    // 3. Envoyer ALERT 0x85 immédiatement via q_tx
     ecu_frame_t alert;
     alert.type = MSG_ALARM;
     alert.len  = (uint8_t)strnlen(reason, MAX_PAYLOAD_LEN);
     memcpy(alert.payload, reason, alert.len);
 
-    // Envoi haute priorité : on pousse en tête de queue si possible
     if (xQueueSendToFront(q_tx, &alert, 0) != pdTRUE) {
-        // Queue pleine : on essaie quand même normalement
         xQueueSend(q_tx, &alert, 0);
     }
 }
 
 /* ─── ISR GPIO (contexte interruption) ──────────────────────────── */
+/*
+ * On notifie directement task_failsafe via FAILSAFE_GPIO_BIT.
+ * portYIELD_FROM_ISR force un context switch immédiat vers la tâche
+ * (prio 5) dès la fin de l'ISR, garantissant une réponse < 5 ms.
+ */
 void IRAM_ATTR failsafe_gpio_isr(void *arg)
 {
     BaseType_t woken = pdFALSE;
-    xSemaphoreGiveFromISR(sem_gpio, &woken);
-    // Forcer un context switch si Failsafe (prio 5) était en attente
+    xTaskNotifyFromISR(task_failsafe_handle,
+                       FAILSAFE_GPIO_BIT,
+                       eSetBits,
+                       &woken);
     portYIELD_FROM_ISR(woken);
 }
 
-/* ─── Tâche principale ───────────────────────────────────────────── */
+/*Tâche principale*/
 void task_failsafe(void *pv)
 {
     ESP_LOGI(TAG, "Tâche démarrée (prio 5, watchdog %dms)",
@@ -53,23 +57,32 @@ void task_failsafe(void *pv)
 
     while (1) {
         /*
-         * ulTaskNotifyTake attend une notification du Parser
-         * (envoyée à chaque trame valide reçue).
-         * Si aucune notification pendant WATCHDOG_TIMEOUT_MS → failsafe.
+         * xTaskNotifyWait attend :
+         *   - FAILSAFE_WATCHDOG_BIT (0x01) : envoyé par le Parser à chaque
+         *     trame valide → reset du watchdog 2 s.
+         *   - FAILSAFE_GPIO_BIT    (0x02) : envoyé par l'ISR GPIO
+         *     directement → réponse garantie < 5 ms.
+         *
+         * Timeout WATCHDOG_TIMEOUT_MS sans notification → failsafe.
+         * Tous les bits sont effacés à la sortie (ulBitsToClearOnExit).
          */
-        uint32_t notified = ulTaskNotifyTake(pdTRUE,
-                                pdMS_TO_TICKS(WATCHDOG_TIMEOUT_MS));
+        uint32_t bits = 0;
+        BaseType_t notified = xTaskNotifyWait(0,
+                                              0xFFFFFFFFu,
+                                              &bits,
+                                              pdMS_TO_TICKS(WATCHDOG_TIMEOUT_MS));
 
-        if (notified == 0) {
+        if (notified == pdFALSE) {
             // Timeout : aucune trame valide depuis 2 secondes
             trigger_failsafe("TIMEOUT: no valid frame for 2s");
-            // Après failsafe, on attend un MODE_SET pour reprendre
-            // Le Parser continuera à notifier quand le trafic reprend
         }
 
-        // Vérification GPIO en parallèle (non-bloquant)
-        if (xSemaphoreTake(sem_gpio, 0) == pdTRUE) {
+        if (bits & FAILSAFE_GPIO_BIT) {
+            // Signal GPIO reçu directement depuis l'ISR
             trigger_failsafe("GPIO: external error signal");
         }
+
+        // FAILSAFE_WATCHDOG_BIT : trame valide reçue → watchdog reset implicite
+        // (xTaskNotifyWait repart avec un nouveau délai de 2 s)
     }
 }
